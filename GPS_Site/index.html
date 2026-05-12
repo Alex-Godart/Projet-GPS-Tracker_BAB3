@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>GPS Tracker Pro</title>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+  <!-- Leaflet -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
+  <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+
+  <!-- Firebase -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-database-compat.js"></script>
+
+  <!-- Chart.js -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+  <style>
+    body { margin:0; font-family:Arial; background:white; }
+
+    header {
+      text-align:center;
+      padding:20px;
+      border-bottom:2px solid black;
+    }
+
+    section { padding:20px; }
+
+    #map {
+      height:500px;
+      border:2px solid black;
+      border-radius:10px;
+    }
+
+    #stats {
+      display:flex;
+      flex-wrap:wrap;
+      gap:10px;
+    }
+
+    .card {
+      border:2px solid black;
+      padding:10px;
+      border-radius:8px;
+      flex:1;
+      min-width:150px;
+    }
+
+    .chartBox {
+      border:2px solid black;
+      padding:10px;
+      margin-top:15px;
+      border-radius:10px;
+    }
+
+    table {
+      width:100%;
+      border-collapse:collapse;
+      font-size:12px;
+    }
+
+    th, td {
+      border:1px solid #ccc;
+      padding:5px;
+      text-align:center;
+    }
+
+    th { background:#eee; }
+
+    .file-upload {
+      display:inline-block;
+      margin:10px 0;
+      padding:10px;
+      border:2px solid black;
+      border-radius:10px;
+      cursor:pointer;
+    }
+
+    .file-upload input { display:none; }
+  </style>
+</head>
+
+<body>
+
+<header>
+  <h1>GPS Tracker</h1>
+</header>
+
+<section>
+  <div id="stats"></div>
+
+  <div class="chartBox">
+    <h3>🚗 Vitesse (km/h)</h3>
+    <canvas id="speedChart"></canvas>
+  </div>
+
+  <div class="chartBox">
+    <h3>⛰️ Altitude (m)</h3>
+    <canvas id="altChart"></canvas>
+  </div>
+</section>
+
+<section>
+  <div id="map"></div>
+</section>
+
+<section>
+  <label class="file-upload">
+    📁 Importer fichier .csv/.txt
+    <input type="file" id="fileInput">
+  </label>
+</section>
+
+<section>
+  <h3>données GPS</h3>
+  <div id="list"></div>
+</section>
+
+<script>
+
+// =====================
+// UTIL
+// =====================
+function parseTime(t) {
+  // HH:MM:SS -> seconds
+  if (typeof t === "string" && t.includes(":")) {
+    const [h,m,s] = t.split(":").map(Number);
+    return h*3600 + m*60 + s;
+  }
+  return Number(t) || 0;
+}
+
+function getDistance(lat1, lon1, lat2, lon2) {
+  const R = 6371;
+  const dLat = (lat2-lat1)*Math.PI/180;
+  const dLon = (lon2-lon1)*Math.PI/180;
+
+  const a =
+    Math.sin(dLat/2)**2 +
+    Math.cos(lat1*Math.PI/180) *
+    Math.cos(lat2*Math.PI/180) *
+    Math.sin(dLon/2)**2;
+
+  return 2*R*Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+}
+
+function formatTime(seconds) {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = Math.floor(seconds % 60);
+
+  return `${h.toString().padStart(2,'0')}:` +
+         `${m.toString().padStart(2,'0')}:` +
+         `${s.toString().padStart(2,'0')}`;
+}
+
+function resetData() {
+
+  firebaseData = [];
+  fileData = [];
+  points = [];
+  path = [];
+
+  polyline.setLatLngs([]);
+  marker.setLatLng([50.85,4.35]);
+
+  if (marker) {
+  map.removeLayer(marker);
+  marker = null;
+}
+
+  pointsLayer.clearLayers();
+
+  document.getElementById("stats").innerHTML = "";
+  document.getElementById("list").innerHTML = "";
+
+  if (speedChart) speedChart.destroy();
+  if (altChart) altChart.destroy();
+  db.ref("/data").remove();
+  document.getElementById("fileInput").value = "";
+}
+
+// =====================
+// GLOBAL STATE
+// =====================
+let points = [];
+let path = [];
+let firebaseData = [];
+let fileData = [];
+
+// =====================
+// MAP
+// =====================
+const map = L.map('map').setView([50.85,4.35], 13);
+let pointsLayer = L.layerGroup().addTo(map);
+
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{
+  attribution:'© OpenStreetMap'
+}).addTo(map);
+
+let marker = null;
+let polyline = L.polyline([], {color:'blue'}).addTo(map);
+
+// =====================
+// CHARTS
+// =====================
+let speedChart = null;
+let altChart = null;
+
+// =====================
+// CLEAN + SORT + MERGE
+// =====================
+function cleanData(data) {
+
+  // normalisation + parsing
+  let cleaned = data.map(p => ({
+    latitude: Number(p.latitude),
+    longitude: Number(p.longitude),
+    speed: Number(p.speed || 0),
+    altitude: Number(p.altitude || 0),
+    time: parseTime(p.timestamp ?? p.time ?? 0)
+  }));
+
+  // tri chronologique
+  cleaned.sort((a,b) => a.time - b.time);
+
+  // suppression doublons (position + temps proche)
+  let filtered = [];
+
+  for (let i=0;i<cleaned.length;i++) {
+
+    const p = cleaned[i];
+    const prev = filtered[filtered.length-1];
+
+    if (!prev) {
+      filtered.push(p);
+      continue;
+    }
+
+    const samePos =
+      Math.abs(prev.latitude - p.latitude) < 0.00001 &&
+      Math.abs(prev.longitude - p.longitude) < 0.00001;
+
+    const sameTime = Math.abs(prev.time - p.time) < 2;
+
+    if (samePos && sameTime) continue;
+
+    filtered.push(p);
+  }
+
+  return filtered;
+}
+
+// =====================
+// RENDER
+// =====================
+function render(data) {
+
+  points = cleanData(data);
+
+  // 🔥 reset anciens points
+pointsLayer.clearLayers();
+
+// 📍 ajouter un marker pour chaque point
+points.forEach((p, i) => {
+  L.circleMarker([p.latitude, p.longitude], {
+    radius: 5,
+    color: "black",
+    fillColor: i === 0 ? "red" : "blue",
+    fillOpacity: 0.7
+  }).addTo(pointsLayer);
+});
+
+
+  if (points.length === 0) return;
+
+  path = points.map(p => [p.latitude, p.longitude]);
+  polyline.setLatLngs(path);
+
+  const last = points[points.length-1];
+
+if (!marker) {
+  marker = L.marker([last.latitude, last.longitude]).addTo(map);
+} else {
+  marker.setLatLng([last.latitude, last.longitude]);
+}
+
+  // =====================
+  // STATS
+  // =====================
+  let totalDist = 0;
+  for (let i=1;i<points.length;i++) {
+    totalDist += getDistance(
+      points[i-1].latitude,
+      points[i-1].longitude,
+      points[i].latitude,
+      points[i].longitude
+    );
+  }
+
+  const avgSpeed = points.reduce((a,p)=>a+p.speed,0)/points.length;
+  const avgAlt = points.reduce((a,p)=>a+p.altitude,0)/points.length;
+
+  const duration = formatTime(last.time - points[0].time);
+
+  document.getElementById("stats").innerHTML = `
+    <div class="card">📍 Points: ${points.length}</div>
+    <div class="card">⏱️ Temps: ${duration}s</div>
+    <div class="card">🚗 Vitesse moy: ${avgSpeed.toFixed(2)}</div>
+    <div class="card">⛰️ Altitude moy: ${avgAlt.toFixed(2)}</div>
+    <div class="card">📏 Distance: ${totalDist.toFixed(3)} km</div>
+  `;
+
+  // =====================
+  // TABLE
+  // =====================
+  document.getElementById("list").innerHTML = `
+  <table>
+    <tr>
+      <th>#</th>
+      <th>Latitude</th>
+      <th>Longitude</th>
+      <th>Vitesse (km/h)</th>
+      <th>Altitude (m)</th>
+      <th>Temps (HH:MM:SS)</th>
+    </tr>
+    ${points.map((p,i)=>`
+      <tr>
+        <td>${i+1}</td>
+        <td>${p.latitude.toFixed(5)}</td>
+        <td>${p.longitude.toFixed(5)}</td>
+        <td>${p.speed}</td>
+        <td>${p.altitude}</td>
+        <td>${formatTime(p.time)}</td>
+      </tr>
+    `).join("")}
+  </table>`;
+
+  // =====================
+  // CHARTS
+  // =====================
+  const t0 = points[0].time;
+  const labels = points.map(p => p.time - t0);
+  const speeds = points.map(p => p.speed);
+  const alts = points.map(p => p.altitude);
+
+  if (speedChart) speedChart.destroy();
+  if (altChart) altChart.destroy();
+
+  speedChart = new Chart(document.getElementById("speedChart"), {
+    type:'line',
+    data:{
+      labels,
+      datasets:[{
+        label:'Vitesse',
+        data:speeds,
+        borderColor:'red'
+      }]
+    }
+  });
+
+  altChart = new Chart(document.getElementById("altChart"), {
+    type:'line',
+    data:{
+      labels,
+      datasets:[{
+        label:'Altitude',
+        data:alts,
+        borderColor:'blue'
+      }]
+    }
+  });
+}
+
+// =====================
+// FIREBASE
+// =====================
+const firebaseConfig = {
+  databaseURL:"https://gps-tracker-80722-default-rtdb.europe-west1.firebasedatabase.app/"
+};
+
+firebase.initializeApp(firebaseConfig);
+const db = firebase.database();
+
+db.ref("/data").on("value", snap => {
+  const raw = snap.val();
+  if (!raw) return;
+
+  firebaseData = Object.values(raw);
+
+  render([...firebaseData, ...fileData]);
+});
+
+// =====================
+// FILE IMPORT
+// =====================
+document.getElementById("fileInput").addEventListener("change", e => {
+
+  const file = e.target.files[0];
+  const reader = new FileReader();
+
+  reader.onload = ev => {
+
+  const lines = ev.target.result.split("\n");
+
+  fileData = lines.map(line => {
+    const [lat,lon,speed,alt,time] = line.split(",");
+    return {
+      latitude: lat,
+      longitude: lon,
+      speed,
+      altitude: alt,
+      timestamp: time
+    };
+  }).filter(p => p.latitude);
+
+  render([...firebaseData, ...fileData]);
+};
+
+  reader.readAsText(file);
+});
+
+</script>
+<button onclick="resetData()">🔄 Reset</button>
+</body>
+</html>

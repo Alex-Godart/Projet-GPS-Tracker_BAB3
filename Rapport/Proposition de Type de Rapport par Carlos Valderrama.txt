@@ -1,0 +1,51 @@
+Proposition de CV
+
+1. Introduction   :  
+Contexte   : "Des gens ont fait plein de chose"
+Objectifs  : je vais faire "machin" 
+Contributions  : "TADA ! et voici ma contribution !"
+
+2. Organisation
+
+3. Etat de l'art
+
+     Critique serre : ils ont montré projets étudiants, mais auraient pu montrer commercialement, qu'est-ce qui existe aussi ?   Montrer une partie de travaux étudiants DIY, prendre les exemples trouvé, et en raconter une histoire. Afin qu'en suite de rapport, on puisse dire "voici ma nouvelle version !"
+
+4. Méthodologie
+  1ere partie : donner une figure d'ordre généraliste, qui aide le rapporteur, dès d'entrée de jeu, afin de faciliter l'imagination, quand il lira.
+  Essayer que l'architecture matérielle puisse se marier avec la disposition physique, dans la mesure du possible.
+
+	Critique serre : intitulé "capteurs", on s'en fout !  Ce qui est important c'est de savoir que l'on veut réguler l'humidité, régulier la température, etc. …. LA TÄCHE !!!! Ensuite, pour réaliser cette tâche, on peut mentionner les capteurs utilisés pour arriver à telle ou telle tâche.
+
+----> 2eme partie : donner une sections pour chacune des tâches, montrer les choix que vous avez fait, et justifier ces choix !
+
+     section(s) "mesure de …"
+     section(s) "comment je connecte mes …"
+     section(s) "comment je fais rentrer de l'air, ou "comment j'actionne telle ou telle chose"
+     on peut profiter de ces sections pour montrer les résultats intermédiaires qui contribuent à telle ou telle tâche
+
+	Info sympa : un "fritzing" sera toujours le bienvenu pour faire une bonne com
+                     un petit diagramme d'état aussi, si possible, bien sûr … Logiciel possibles : LucidChart, "celui utilisé par les gars de la serre", ...
+
+5. Réalisations
+
+	Critique serre :  il présentent l'interface Nextion, qi est super sympa, uniquement à la page 22 ! A cette étape là, le rapporteur, il s'est endormi depuis longtemps, lol
+			  ils présentent les noms de fonction  
+
+6. Résultats
+    Si on a fait des tests, on les mets là-dedans
+	 Critique serre : ils n'ont pas présenté leur résultats !!!!!! 
+7. Conclusion
+
+
+Conseils de CV
+---------------
+
+Si Figure, expliquer en légende ce que fait la figure, et pas juste ce qu'est cette figure. (exemple de la photo de famille)
+La police des figres
+
+
+Conseil pour la présentation 
+----------------------------
+
+- veiller à un équilibre de la présentation, et se responsabiliser chacun afin que 
