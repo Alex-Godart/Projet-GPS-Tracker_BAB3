@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>GPS Tracker Pro</title>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+  <!-- Leaflet -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
+  <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+
+  <!-- Firebase -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-database-compat.js"></script>
+
+  <!-- Chart.js -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+  <style>
+    body { margin:0; font-family:Arial; background:white; }
+    header { text-align:center; padding:20px; border-bottom:2px solid black; }
+    section { padding:20px; }
+    #map { height:500px; border:2px solid black; border-radius:10px; }
+    #stats { display:flex; flex-wrap:wrap; gap:10px; }
+    .card { border:2px solid black; padding:10px; border-radius:8px; flex:1; min-width:150px; }
+    .chartBox { border:2px solid black; padding:10px; margin-top:15px; border-radius:10px; }
+    table { width:100%; border-collapse:collapse; font-size:12px; }
+    th, td { border:1px solid #ccc; padding:5px; text-align:center; }
+    th { background:#eee; }
+    .file-upload { display:inline-block; margin:10px 0; padding:10px; border:2px solid black; border-radius:10px; cursor:pointer; }
+    .file-upload input { display:none; }
+    .controls { padding: 20px; text-align: center; }
+    button { padding: 10px 20px; cursor: pointer; background: #ff4444; color: white; border: none; border-radius: 5px; }
+  </style>
+</head>
+
+<body>
+
+<header>
+  <h1>GPS Tracker</h1>
+</header>
+
+<section>
+  <div id="stats"></div>
+  <div class="chartBox">
+    <h3>🚗 Vitesse (km/h)</h3>
+    <canvas id="speedChart"></canvas>
+  </div>
+  <div class="chartBox">
+    <h3>⛰️ Altitude (m)</h3>
+    <canvas id="altChart"></canvas>
+  </div>
+</section>
+
+<section>
+  <div id="map"></div>
+</section>
+
+<section>
+  <label class="file-upload">
+    📁 Importer fichier .csv
+    <input type="file" id="fileInput">
+  </label>
+</section>
+
+<div class="controls">
+    <button onclick="resetData()">🔄 Réinitialiser les données</button>
+</div>
+
+<section>
+  <h3>Données GPS enregistrées</h3>
+  <div id="list"></div>
+</section>
+
+<script>
+
+// =====================
+// UTILITAIRES
+// =====================
+
+/**
+ * Convertit HH:MM:SS en secondes totales pour le tri et les calculs
+ * Gère aussi les timestamps bruts (secondes)
+ */
+function parseTime(t) {
+  if (!t) return 0;
+  if (typeof t === "string" && t.includes(":")) {
+    const parts = t.split(":");
+    const h = parseInt(parts[0], 10) || 0;
+    const m = parseInt(parts[1], 10) || 0;
+    const s = parseInt(parts[2], 10) || 0;
+    return h * 3600 + m * 60 + s;
+  }
+  return Number(t) || 0;
+}
+
+function getDistance(lat1, lon1, lat2, lon2) {
+  const R = 6371;
+  const dLat = (lat2-lat1)*Math.PI/180;
+  const dLon = (lon2-lon1)*Math.PI/180;
+  const a = Math.sin(dLat/2)**2 + Math.cos(lat1*Math.PI/180) * Math.cos(lat2*Math.PI/180) * Math.sin(dLon/2)**2;
+  return 2*R*Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+}
+
+function formatTime(seconds) {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = Math.floor(seconds % 60);
+  return `${h.toString().padStart(2,'0')}:${m.toString().padStart(2,'0')}:${s.toString().padStart(2,'0')}`;
+}
+
+// =====================
+// ÉTAT GLOBAL
+// =====================
+let points = [];
+let firebaseData = [];
+let fileData = [];
+let speedChart = null;
+let altChart = null;
+
+// =====================
+// CARTE
+// =====================
+const map = L.map('map').setView([50.85, 4.35], 13);
+let pointsLayer = L.layerGroup().addTo(map);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{ attribution:'© OpenStreetMap' }).addTo(map);
+let marker = null;
+let polyline = L.polyline([], {color:'blue', weight: 4}).addTo(map);
+
+// =====================
+// TRAITEMENT DES DONNÉES
+// =====================
+function cleanData(data) {
+  // 1. Normalisation
+  let cleaned = data.map(p => ({
+    latitude: Number(p.latitude),
+    longitude: Number(p.longitude),
+    speed: Number(p.speed || 0),
+    altitude: Number(p.altitude || 0),
+    time: parseTime(p.time || p.timestamp || 0)
+  })).filter(p => !isNaN(p.latitude) && !isNaN(p.longitude));
+
+  // 2. Tri par temps (important pour le tracé de la ligne)
+  cleaned.sort((a,b) => a.time - b.time);
+
+  // 3. Filtrage doublons
+  let filtered = [];
+  for (let i=0; i<cleaned.length; i++) {
+    const p = cleaned[i];
+    const prev = filtered[filtered.length-1];
+    if (!prev) { filtered.push(p); continue; }
+
+    const samePos = Math.abs(prev.latitude - p.latitude) < 0.00001 && Math.abs(prev.longitude - p.longitude) < 0.00001;
+    const sameTime = prev.time === p.time;
+
+    if (samePos && sameTime) continue;
+    filtered.push(p);
+  }
+  return filtered;
+}
+
+function render(combinedData) {
+  points = cleanData(combinedData);
+  if (points.length === 0) return;
+
+  // Mise à jour Carte
+  const latLngs = points.map(p => [p.latitude, p.longitude]);
+  polyline.setLatLngs(latLngs);
+  pointsLayer.clearLayers();
+  
+  points.forEach((p, i) => {
+    L.circleMarker([p.latitude, p.longitude], {
+      radius: 4,
+      color: i === 0 ? "red" : (i === points.length - 1 ? "green" : "blue"),
+      fillOpacity: 0.6
+    }).addTo(pointsLayer);
+  });
+
+  const last = points[points.length-1];
+  if (!marker) {
+    marker = L.marker([last.latitude, last.longitude]).addTo(map);
+  } else {
+    marker.setLatLng([last.latitude, last.longitude]);
+  }
+  map.panTo([last.latitude, last.longitude]);
+
+  // Statistiques
+  let totalDist = 0;
+  for (let i=1; i<points.length; i++) {
+    totalDist += getDistance(points[i-1].latitude, points[i-1].longitude, points[i].latitude, points[i].longitude);
+  }
+
+const avgAlt = points.length > 0 
+  ? points.reduce((a, p) => a + p.altitude, 0) / points.length 
+  : 0;
+
+  const avgSpeed = points.reduce((a,p)=>a+p.speed, 0) / points.length;
+  const duration = last.time - points[0].time;
+
+  document.getElementById("stats").innerHTML = `
+    <div class="card">📍 Points: ${points.length}</div>
+    <div class="card">⏱️ Durée: ${formatTime(duration)}</div>
+    <div class="card">🚗 Vitesse moy: ${avgSpeed.toFixed(1)} km/h</div>
+    <div class="card">⛰️ Altitude moy: ${avgAlt.toFixed(1)} m</div>
+    <div class="card">📏 Distance: ${totalDist.toFixed(2)} km</div>
+  `;
+
+  // Tableau
+  document.getElementById("list").innerHTML = `
+    <table>
+      <tr><th>#</th><th>Heure</th><th>Lat</th><th>Lon</th><th>Vitesse</th><th>Alt</th></tr>
+      ${points.map((p,i)=>`
+        <tr>
+          <td>${i+1}</td>
+          <td>${formatTime(p.time)}</td>
+          <td>${p.latitude.toFixed(5)}</td>
+          <td>${p.longitude.toFixed(5)}</td>
+          <td>${p.speed}</td>
+          <td>${p.altitude}</td>
+        </tr>`).join("")}
+    </table>`;
+
+  // Graphiques
+  const t0 = points[0].time;
+  const labels = points.map(p => formatTime(p.time));
+  
+  if (speedChart) speedChart.destroy();
+  if (altChart) altChart.destroy();
+
+  const ctxS = document.getElementById("speedChart").getContext("2d");
+  speedChart = new Chart(ctxS, {
+    type:'line',
+    data: {
+      labels,
+      datasets:[{ label:'Vitesse (km/h)', data: points.map(p=>p.speed), borderColor:'red', tension: 0.1 }]
+    }
+  });
+
+  const ctxA = document.getElementById("altChart").getContext("2d");
+  altChart = new Chart(ctxA, {
+    type:'line',
+    data: {
+      labels,
+      datasets:[{ label:'Altitude (m)', data: points.map(p=>p.altitude), borderColor:'blue', tension: 0.1 }]
+    }
+  });
+}
+
+// =====================
+// FIREBASE
+// =====================
+const firebaseConfig = {
+  databaseURL:"https://gps-tracker-80722-default-rtdb.europe-west1.firebasedatabase.app/"
+};
+firebase.initializeApp(firebaseConfig);
+const db = firebase.database();
+
+db.ref("/data").on("value", snap => {
+  const raw = snap.val();
+  firebaseData = raw ? Object.values(raw) : [];
+  render([...firebaseData, ...fileData]);
+});
+
+// =====================
+// IMPORT FICHIER
+// =====================
+document.getElementById("fileInput").addEventListener("change", e => {
+  const file = e.target.files[0];
+  if(!file) return;
+  const reader = new FileReader();
+
+  reader.onload = ev => {
+    const lines = ev.target.result.split("\n");
+    fileData = lines.map(line => {
+      const col = line.trim().split(",");
+      if (col.length < 2) return null;
+      return {
+        latitude: col[0],
+        longitude: col[1],
+        speed: col[2] || 0,
+        altitude: col[3] || 0,
+        time: col[4] // On récupère la 5ème colonne (l'heure)
+      };
+    }).filter(p => p !== null && p.latitude);
+
+    render([...firebaseData, ...fileData]);
+  };
+  reader.readAsText(file);
+});
+
+function resetData() {
+  if(confirm("Effacer les données Firebase et locales ?")) {
+    db.ref("/data").remove();
+    fileData = [];
+    firebaseData = [];
+    location.reload();
+  }
+}
+
+</script>
+</body>
+</html>
